@@ -6,7 +6,6 @@ library(dplyr)
 library(ggplot2)
 library(brms)
 library(caret)
-library(catboost)
 
 
 setwd('D:\\Kaggle\\Backpack Prediction')
@@ -27,6 +26,8 @@ train <- train %>%
          )
 
 train = train |> mutate(across(where(is.character), as.factor))
+
+#write.csv(train, file = '.\\train_mod.csv')
 
 
 
@@ -50,6 +51,9 @@ test <- test %>%
 
 test = test |> mutate(across(where(is.character), as.factor))
 
+#write.csv(test, file = '.\\test_mod.csv')
+
+
 
 
 head(train)
@@ -59,7 +63,9 @@ summary(test)
 # Price ------------------------------------------------------------------------------------------------------
 # Transformations
 
-hist(train$Price)
+hist(scale(train$Price, center = T, scale = F))
+
+hist(-log(1-train$Price))
 
 hist(log(train$Price))
 
@@ -280,5 +286,119 @@ xg.pred = data.frame('id' = test$id,
 
 
 write.csv(xg.pred, file = '.\\xg.pred.csv')
+
+# GBM --------------------------------------------------------------------------------------------------------
+
+tc = trainControl(method = 'cv',
+                  number = 3)
+
+gbmgrid <-  expand.grid(n.trees =c(200),
+                       interaction.depth= c(2),
+                       shrinkage = c(0.1),
+                       n.minobsinnode = c(1)
+)
+
+
+
+
+set.seed(825)
+gbm.fit <- train(Price ~ Brand + Material + Size + Laptop.Compartment + Waterproof + Color + weight_bins, 
+                data = train, 
+                method = "gbm", 
+                trControl = tc,
+                tuneGrid = gbmgrid)
+gbm.fit
+plot(varImp(gbm.fit))
+
+gbm.fit$bestTune
+
+gbm.pred = data.frame('id' = test$id,
+                     Price = predict(gbm.fit, newdata = test)
+)
+
+
+write.csv(gbm.pred, file = '.\\gbm.pred.csv')
+
+# transformation implementation ----------------------------------------------------------------------------------------
+
+# Transform X to X* in [0,1]
+X_star <- (train$Price - 15) / (150 - 15)
+
+hist(X_star)
+
+# Fit logistic regression model
+model <- glm(X_star ~ Brand + Material + Size + Laptop.Compartment + Waterproof + Color + weight_bins, 
+             data = train,
+             family = binomial(link = "probit"))
+
+summary(model)
+plot(model)
+
+# Generate new data for prediction
+X_star_pred <- predict(model, newdata = train |> select(-Price), type = "response")
+
+# Transform predictions back to original X scale
+X_pred <- 15 + (150 - 15) * X_star_pred
+
+
+plot(train$Price, X_pred)
+
+sqrt(mean((train$Price - X_pred)^2))
+
+X_star_pred <- predict(model, newdata = test, type = "response")
+
+# Transform predictions back to original X scale
+X_pred <- 15 + (150 - 15) * X_star_pred
+
+
+log.pred = data.frame('id' = test$id,
+                      Price = X_pred
+)
+
+
+write.csv(log.pred, file = '.\\log.pred.csv')
+
+
+
+# Bayesian Approach to the above -----------------------------------------------------------------------------
+
+n = 300000
+X_star_brms <- X_star * (n - 1) / n + 1 / (2 * n)
+
+train_brms = train |> mutate(X_star_brms = X_star_brms)
+
+
+
+# Fit Bayesian Beta regression using brms
+model <- brm(
+  bf(X_star_brms ~ Brand + Material + Size + Laptop.Compartment + Waterproof + Color + weight_bins, family = Beta()), # Beta regression
+  data = train_brms,
+  prior = c(
+    prior(normal(0, 2), class = "b"),
+    prior(normal(0, 2), class = "Intercept")
+  ),
+  iter = 2000, warmup = 1000, chains = 1
+)
+
+summary(model)
+
+plot(model)
+
+
+
+X_star_pred <- predict(model, newdata = test)
+
+# Transform predictions back to original X scale
+X_pred <- 15 + (150 - 15) * X_star_pred[,1]
+
+brms.pred = data.frame('id' = test$id,
+                      Price = X_pred
+)
+
+
+write.csv(brms.pred, file = '.\\brms.pred.csv')
+
+
+
 
 
